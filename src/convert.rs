@@ -134,6 +134,7 @@ pub async fn convert(body: web::Bytes, query: web::Query<ConvertParams>) -> impl
 
         Ok(HttpResponse::Ok()
             .content_type(format_to_mime(&format))
+            .insert_header(("Access-Control-Allow-Origin", "*"))
             .body(output_data))
     })();
 

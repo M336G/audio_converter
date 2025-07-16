@@ -40,10 +40,7 @@ async fn main() -> io::Result<()> {
         let cors = Cors::default()
             .allow_any_origin()
             .allowed_methods(vec!["OPTIONS", "GET", "POST"])
-            .allowed_headers(vec![
-                actix_web::http::header::CONTENT_TYPE,
-                actix_web::http::header::ACCEPT,
-            ]);
+            .allow_any_header();
 
         App::new()
             .app_data(web::PayloadConfig::new(max_file_size * 1024 * 1024))
