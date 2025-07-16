@@ -1,7 +1,11 @@
 [package]
 name = "audio-converter"
+description = "An audio conversion API written in Rust! Supports .mp3, .ogg, .opus, .wav & .webm!"
+authors = ["M336"]
 version = "1.0.0"
 edition = "2021"
+repository = "https://github.com/M336G/audio-converter"
+license = "MPL-2.0"
 
 [dependencies]
 actix-cors = "0.7.1"
