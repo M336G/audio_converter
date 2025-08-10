@@ -29,13 +29,13 @@ pub async fn convert(body: web::Bytes, query: web::Query<ConvertParams>) -> impl
 
     if !supported_formats.contains(&format.as_str()) {
         return HttpResponse::UnsupportedMediaType()
-            .content_type("text/html")
+            .content_type("text/plain")
             .body(format!("Unsupported output format: {}", format));
     }
 
     if body.is_empty() {
         return HttpResponse::BadRequest()
-        .content_type("text/html")
+        .content_type("text/plain")
         .body("Empty file!");
     }
 
@@ -48,13 +48,13 @@ pub async fn convert(body: web::Bytes, query: web::Query<ConvertParams>) -> impl
 
             if ext == format {
                 return HttpResponse::BadRequest()
-                    .content_type("text/html")
+                    .content_type("text/plain")
                     .body("You're trying to convert a file to the same format!");
             }
 
             if !supported_formats.contains(&ext) {
                 return HttpResponse::UnsupportedMediaType()
-                    .content_type("text/html")
+                    .content_type("text/plain")
                     .body(format!("Unsupported input file type: {} ({})", ext, mime));
             }
             ext
@@ -76,7 +76,7 @@ pub async fn convert(body: web::Bytes, query: web::Query<ConvertParams>) -> impl
     if let Err(err) = fs::create_dir_all("conversions") {
         eprintln!("Failed to create conversions dir: {}", err);
         return HttpResponse::InternalServerError()
-            .content_type("text/html")
+            .content_type("text/plain")
             .body("Internal Server Error");
     }
 
@@ -85,14 +85,14 @@ pub async fn convert(body: web::Bytes, query: web::Query<ConvertParams>) -> impl
         let mut file = File::create(&input_path).map_err(|error| {
             eprintln!("File create error: {}", error);
             HttpResponse::InternalServerError()
-                .content_type("text/html")
+                .content_type("text/plain")
                 .body("Internal Server Error")
         })?;
 
         file.write_all(&body).map_err(|error| {
             eprintln!("Write error: {}", error);
             HttpResponse::InternalServerError()
-                .content_type("text/html")
+                .content_type("text/plain")
                 .body("Could not write file to convert")
         })?;
 
@@ -126,7 +126,7 @@ pub async fn convert(body: web::Bytes, query: web::Query<ConvertParams>) -> impl
         let output_data = fs::read(&output_path).map_err(|error| {
             eprintln!("Read error: {}", error);
             HttpResponse::InternalServerError()
-                .content_type("text/html")
+                .content_type("text/plain")
                 .body("Internal Server Error")
         })?;
 
