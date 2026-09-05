@@ -1,14 +1,21 @@
+use actix_rt::time::timeout;
 use actix_web::{post, web, HttpResponse, Responder};
 use essi_ffmpeg::FFmpeg;
 use randomizer::Randomizer;
 use serde::Deserialize;
+use tokio::sync::Semaphore;
 use std::fs::{self, File};
 use std::io::Write;
+use std::time::Duration;
 
 #[derive(Deserialize)]
 pub struct ConvertParams {
-    format: Option<String>,
+    format: Option<String>
 }
+
+const SUPPORTED_FORMATS: [&'static str; 7] = [
+    "mp3", "ogg", "opus", "wav", "webm", "flac", "aac"
+];
 
 fn format_to_mime(format: &str) -> &'static str {
     match format {
@@ -17,20 +24,22 @@ fn format_to_mime(format: &str) -> &'static str {
         "ogg" => "audio/ogg",
         "wav" => "audio/wav",
         "webm" => "audio/webm",
+        "flac" => "audio/flac",
+        "aac" => "audio/aac",
         _ => "application/octet-stream",
     }
 }
 
 #[post("/")]
-pub async fn convert(body: web::Bytes, query: web::Query<ConvertParams>) -> impl Responder {
+pub async fn convert(body: web::Bytes, query: web::Query<ConvertParams>, limiter: web::Data<Semaphore>) -> impl Responder {
+    let _permit = limiter.acquire().await.unwrap();
+
     let format = query.format.clone().unwrap_or_else(|| "mp3".to_string());
 
-    let supported_formats: [&'static str; 5] = ["mp3", "ogg", "opus", "wav", "webm"];
-
-    if !supported_formats.contains(&format.as_str()) {
+    if !SUPPORTED_FORMATS.contains(&format.as_str()) {
         return HttpResponse::UnsupportedMediaType()
             .content_type("text/plain")
-            .body(format!("Unsupported output format: {}", format));
+            .body("Unsupported output format!");
     }
 
     if body.is_empty() {
@@ -52,19 +61,24 @@ pub async fn convert(body: web::Bytes, query: web::Query<ConvertParams>) -> impl
                     .body("You're trying to convert a file to the same format!");
             }
 
-            if !supported_formats.contains(&ext) {
+            if !SUPPORTED_FORMATS.contains(&ext) {
                 return HttpResponse::UnsupportedMediaType()
                     .content_type("text/plain")
                     .body(format!("Unsupported input file type: {} ({})", ext, mime));
             }
             ext
         }
-        None => return HttpResponse::BadRequest().body("Could not detect input file type"),
+        None => {
+            return HttpResponse::BadRequest()
+                .content_type("text/plain")
+                .body("Could not detect input file type")
+        }
     };
 
-    let conversion_id = Randomizer::ALPHANUMERIC(16).string().unwrap();
-    let input_path = format!("conversions/{}-input.{}", conversion_id, input_extension);
-    let output_path = format!("conversions/{}-output.{}", conversion_id, format);
+    let conversion_path = std::env::temp_dir().join("audio-converter");
+    let conversion_id = Randomizer::ALPHANUMERIC(32).string().unwrap();
+    let input_path = conversion_path.join(format!("{}-input.{}", conversion_id, input_extension));
+    let output_path = conversion_path.join(format!("{}-output.{}", conversion_id, format));
 
     println!("New conversion request:");
     println!("- ID: {}", conversion_id);
@@ -72,28 +86,20 @@ pub async fn convert(body: web::Bytes, query: web::Query<ConvertParams>) -> impl
     println!("- From: {}", input_extension);
     println!("- To: {}", format);
 
-    // Ensure the "conversions" directory exists
-    if let Err(err) = fs::create_dir_all("conversions") {
-        eprintln!("Failed to create conversions dir: {}", err);
-        return HttpResponse::InternalServerError()
-            .content_type("text/plain")
-            .body("Internal Server Error");
-    }
-
     // Create the input file and write to it
-    let result = (|| {
+    let result = async {
         let mut file = File::create(&input_path).map_err(|error| {
-            eprintln!("File create error: {}", error);
+            eprintln!("Failed creating file: {}", error);
             HttpResponse::InternalServerError()
                 .content_type("text/plain")
                 .body("Internal Server Error")
         })?;
 
         file.write_all(&body).map_err(|error| {
-            eprintln!("Write error: {}", error);
+            eprintln!("Failed writing to file: {}", error);
             HttpResponse::InternalServerError()
                 .content_type("text/plain")
-                .body("Could not write file to convert")
+                .body("Internal Server Error")
         })?;
 
         println!("Converting {} from {} to {}...", conversion_id, input_extension, format);
@@ -106,6 +112,9 @@ pub async fn convert(body: web::Bytes, query: web::Query<ConvertParams>) -> impl
                 .done();
 
             match format.as_str() {
+                "aac" => {
+                    cmd = cmd.arg("-c:a").arg("aac");
+                }
                 "ogg" => {
                     cmd = cmd.arg("-c:a").arg("libvorbis");
                 }
@@ -115,20 +124,42 @@ pub async fn convert(body: web::Bytes, query: web::Query<ConvertParams>) -> impl
                 _ => {}
             }
 
-            cmd.output_as_file(output_path.clone().into())
-                .done()
-                .start()
-                .unwrap()
+            match cmd.output_as_file(output_path.clone().into()).done().start() {
+                Ok(proc) => proc,
+                Err(error) => {
+                    eprintln!("Failed to start FFmpeg: {}", error);
+                    return Err(HttpResponse::InternalServerError()
+                        .content_type("text/plain")
+                        .body("Internal Server Error"));
+                }
+            }
         };
 
-        ffmpeg.wait().unwrap();
+        match timeout(Duration::from_secs(120), web::block(move || ffmpeg.wait())).await {
+            Ok(Ok(Ok(_status))) => {}
+            Ok(Ok(Err(error))) => {
+                eprintln!("FFmpeg exited with error: {}", error);
+                return Err(HttpResponse::InternalServerError().body("Internal Server Error"));
+            }
+            Ok(Err(_)) => {
+                return Err(HttpResponse::InternalServerError().body("Internal Server Error"));
+            }
+            Err(_) => {
+                eprintln!("FFmpeg conversion {} timed out", conversion_id);
+                return Err(HttpResponse::InternalServerError().body("Internal Server Error"));
+            }
+        }
 
-        let output_data = fs::read(&output_path).map_err(|error| {
-            eprintln!("Read error: {}", error);
-            HttpResponse::InternalServerError()
-                .content_type("text/plain")
-                .body("Internal Server Error")
-        })?;
+        let read_path = output_path.clone();
+        let output_data = web::block(move || fs::read(&read_path))
+            .await
+            .map_err(|_| HttpResponse::InternalServerError().body("Internal Server Error"))?
+            .map_err(|error| {
+                eprintln!("Failed to read file: {}", error);
+                HttpResponse::InternalServerError()
+                    .content_type("text/plain")
+                    .body("Internal Server Error")
+            })?;
 
         println!("Successfully converted {} from {} to {}!", conversion_id, input_extension, format);
 
@@ -136,12 +167,12 @@ pub async fn convert(body: web::Bytes, query: web::Query<ConvertParams>) -> impl
             .content_type(format_to_mime(&format))
             .insert_header(("Access-Control-Allow-Origin", "*"))
             .body(output_data))
-    })();
+    }.await;
 
     // Cleanup -input and -output
     for path in [&input_path, &output_path] {
         if let Err(error) = fs::remove_file(path) {
-            eprintln!("Failed to delete file {}: {}", path, error);
+            eprintln!("Failed to delete file {:#?}: {}", path, error);
         }
     }
 

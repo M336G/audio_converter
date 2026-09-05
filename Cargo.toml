@@ -1,19 +1,20 @@
 [package]
-name = "audio-converter"
-description = "An audio conversion API written in Rust! Supports .mp3, .ogg, .opus, .wav & .webm!"
+name = "audio_converter"
+description = "An audio conversion API written in Rust! Supports mp3, ogg, opus, flac, wav & more!"
 authors = ["M336"]
-version = "1.0.1"
+version = "1.1.0"
 edition = "2021"
-repository = "https://github.com/M336G/audio-converter"
+repository = "https://github.com/M336G/audio_converter"
 license = "MPL-2.0"
 
 [dependencies]
-actix-cors = "0.7.1"
-actix-files = "0.6.6"
-actix-rt = "2.10.0"
-actix-web = "4.11.0"
+actix-cors = "0.7.2"
+actix-files = "0.7.0"
+actix-rt = "2.13.0"
+actix-web = "4.15.0"
 dotenv = "0.15.0"
 essi-ffmpeg = "0.3.0"
-infer = "0.19.0"
+infer = "0.22.0"
 randomizer = "0.1.2"
-serde = { version = "1.0.219", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = "1.53.1"
