@@ -20,8 +20,9 @@ async fn main() -> io::Result<()> {
 
     let max_file_size: usize = env::var("MAX_FILE_SIZE")
         .ok()
-        .and_then(|max_size| max_size.parse().ok())
-        .unwrap_or(20);
+        .and_then(|max_size_mb| max_size_mb.parse::<usize>().ok())
+        .and_then(|max_size_mb| max_size_mb.checked_mul(1024 * 1024))
+        .unwrap_or(20 * 1024 * 1024);
 
     let max_concurrent_conversions: usize = env::var("MAX_CONCURRENT_CONVERSIONS")
         .ok()
@@ -40,7 +41,7 @@ async fn main() -> io::Result<()> {
     }
 
     println!("Server started on http://0.0.0.0:{}/!", server_port);
-    println!("Maximum file size limit set to {} MB", max_file_size);
+    println!("Maximum file size limit set to {} MB", max_file_size / 1024 / 1024);
     println!("Maximum concurrent connections set to {}", max_concurrent_conversions);
 
     let conversion_path = std::env::temp_dir().join("audio-converter");
@@ -60,7 +61,7 @@ async fn main() -> io::Result<()> {
             .allow_any_header();
 
         App::new()
-            .app_data(web::PayloadConfig::new(max_file_size * 1024 * 1024))
+            .app_data(web::Data::new(max_file_size))
             .app_data(web::Data::new(Semaphore::new(max_concurrent_conversions)))
             .wrap(middleware::Logger::default())
             .wrap(Compress::default())
