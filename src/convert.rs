@@ -2,13 +2,17 @@ use actix_multipart::Multipart;
 use actix_rt::time::timeout;
 use actix_web::{post, web, HttpResponse, Responder};
 use essi_ffmpeg::FFmpeg;
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::{Stream, StreamExt, TryStreamExt};
 use randomizer::Randomizer;
 use tokio_util::io::ReaderStream;
 use std::fs::{self, File};
 use std::io::Write;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::sync::Semaphore;
+
+use crate::{ConversionLimiter, UploadLimiter};
 
 const SUPPORTED_FORMATS: [&'static str; 9] = [
     "mp3", "ogg", "opus", "wav", "weba", "flac", "aac", "m4a", "aiff"
@@ -29,11 +33,47 @@ fn format_to_mime(format: &str) -> &'static str {
     }
 }
 
-#[post("/")]
-pub async fn convert(mut payload: Multipart, limiter: web::Data<Semaphore>, max_file_size: web::Data<usize>) -> impl Responder {
-    let max_file_size = **max_file_size;
+struct CleanupGuard {
+    paths: Vec<PathBuf>
+}
 
-    let conversion_path = std::env::temp_dir().join("audio-converter");
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        for path in &self.paths {
+            if let Err(error) = fs::remove_file(path) {
+                eprintln!("Failed to delete file {:#?}: {}", path, error);
+            }
+        }
+    }
+}
+
+struct CleanupStream<S> {
+    inner: S,
+    _guard: CleanupGuard,
+}
+
+impl<S: Stream + Unpin> Stream for CleanupStream<S> {
+    type Item = S::Item;
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
+#[post("/")]
+pub async fn convert(mut payload: Multipart, conversion_path: web::Data<std::path::PathBuf>, upload_limiter: web::Data<UploadLimiter>, conversion_limiter: web::Data<ConversionLimiter>, max_file_size: web::Data<usize>) -> impl Responder {
+    let upload_permit = match upload_limiter.0.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            eprintln!("that happened");
+            return HttpResponse::ServiceUnavailable()
+                .content_type("text/plain")
+                .body("Server is too busy; please try again later");
+        }
+    };
+    
+    let conversion_path = conversion_path.get_ref().clone();
+    let max_file_size = **max_file_size;
+    
     let conversion_id = Randomizer::ALPHANUMERIC(32).string().unwrap();
     let tmp_input_path = conversion_path.join(format!("{}-input.tmp", conversion_id));
 
@@ -161,6 +201,8 @@ pub async fn convert(mut payload: Multipart, limiter: web::Data<Semaphore>, max_
             .body("Empty file!");
     }
 
+    drop(upload_permit);
+
     let format = match format {
         Some(format) if SUPPORTED_FORMATS.contains(&format.as_str()) => format,
         Some(_) => {
@@ -230,7 +272,7 @@ pub async fn convert(mut payload: Multipart, limiter: web::Data<Semaphore>, max_
 
     let result = async {
         // If the amount of conversions reached MAX_CONCURRENT_CONVERSIONS then this will lock the request until one of them is done
-        let _permit = limiter.acquire().await.unwrap();
+        let _permit = conversion_limiter.0.acquire().await.unwrap();
 
         // Convert the file
         let mut ffmpeg = {
@@ -335,22 +377,21 @@ pub async fn convert(mut payload: Multipart, limiter: web::Data<Semaphore>, max_
             }
         };
 
-        let stream = ReaderStream::new(file);
+        let stream = CleanupStream {
+            inner: ReaderStream::new(file),
+            _guard: CleanupGuard { paths: vec![input_path.clone(), output_path.clone()] },
+        };
 
         println!("Successfully converted {} from {} to {}!", conversion_id, input_extension, format);
 
         Ok(HttpResponse::Ok()
             .content_type(format_to_mime(&format))
-            .insert_header(("Access-Control-Allow-Origin", "*"))
             .streaming(stream))
     }.await;
 
-    // Cleanup -input and -output
-    for path in [&input_path, &output_path] {
-        if let Err(error) = fs::remove_file(path) {
-            eprintln!("Failed to delete file {:#?}: {}", path, error);
-        }
-    }
-
-    result.unwrap_or_else(|resp| resp)
+    result.unwrap_or_else(|resp| {
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&output_path);
+        resp
+    })
 }

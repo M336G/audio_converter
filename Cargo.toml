@@ -1,8 +1,8 @@
 [package]
 name = "audio_converter"
-description = "An audio conversion API written in Rust! Supports mp3, ogg, opus, flac, wav & more!"
+description = "An audio conversion API written in Rust! Supports mp3, ogg, opus, wav, weba, flac, aac, m4a & aiff"
 authors = ["M336"]
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
 repository = "https://github.com/M336G/audio_converter"
 license = "MPL-2.0"
